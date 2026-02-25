@@ -71,6 +71,16 @@ if uploaded_file:
     # ---------------- DISPLAY PRODUCTS ----------------
     unsplash_key = st.secrets.get("UNSPLASH_ACCESS_KEY", "")
 
+    # Identify Part Number & Description columns
+    part_col = None
+    desc_col = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if "part" in col_lower and "number" in col_lower:
+            part_col = col
+        elif "description" in col_lower:
+            desc_col = col
+
     for _, row in df.iterrows():
 
         st.markdown("---")
@@ -78,7 +88,11 @@ if uploaded_file:
 
         # Image
         with col1:
-            product_name = str(row.iloc[0])
+            # Combine Part Number & Description for image search
+            part_text = str(row[part_col]) if part_col else ""
+            desc_text = str(row[desc_col]) if desc_col else ""
+            product_name = f"{part_text} {desc_text}".strip()
+
             if unsplash_key:
                 image_url = get_product_image(product_name, unsplash_key)
             else:
