@@ -1,33 +1,24 @@
 import streamlit as st
 import pandas as pd
-import requests
 
-st.set_page_config(page_title="Stock Search", layout="wide")
+st.set_page_config(page_title="Stock & Pricing Search", layout="wide")
 
-# ---------------- CONFIG ----------------
 LOW_STOCK_THRESHOLD = 5
-PLACEHOLDER_IMAGE = "https://via.placeholder.com/150?text=No+Image"
 
-# ---------------- IMAGE FETCH ----------------
-@st.cache_data(show_spinner=False)
-def get_product_image(query, access_key):
-    url = "https://api.unsplash.com/search/photos"
-    params = {
-        "query": query,
-        "per_page": 1,
-        "client_id": access_key
-    }
-    try:
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data["results"]:
-            return data["results"][0]["urls"]["small"]
-        else:
-            return PLACEHOLDER_IMAGE
-    except:
-        return PLACEHOLDER_IMAGE
+# ---------- Sticky Header CSS ----------
+st.markdown("""
+<style>
+div[data-testid="stTextInput"] {
+    position: sticky;
+    top: 0;
+    background-color: white;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    z-index: 999;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# ---------------- APP ----------------
 st.title("📦 Stock & Pricing Search")
 
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
@@ -38,25 +29,67 @@ if uploaded_file:
     sheet_names = list(excel_data.keys())
     selected_sheet = st.sidebar.selectbox("Select Sheet", sheet_names)
 
-    df = excel_data[selected_sheet]
-    df = df.fillna("")
+    df_original = excel_data[selected_sheet].fillna("")
 
-    # ---------------- PRODUCT TYPE FILTER ----------------
+    total_products = len(df_original)
+
+    df = df_original.copy()
+
+    # ---------- Detect Columns ----------
+    stock_columns = [
+        col for col in df.columns
+        if any(k in col.lower() for k in ["stock", "qty", "quantity", "sync", "westcoast", "td", "ingram"])
+    ]
+
+    price_columns = [
+        col for col in df.columns
+        if any(k in col.lower() for k in ["price", "cost", "rrp", "b2b", "edu", "public"])
+    ]
+
     type_column = None
     for col in df.columns:
         if "type" in col.lower() or "category" in col.lower():
             type_column = col
             break
 
-    if type_column:
-        product_types = ["All"] + sorted(df[type_column].astype(str).unique().tolist())
-        selected_type = st.selectbox("Filter by Product Type", product_types)
-        if selected_type != "All":
-            df = df[df[type_column].astype(str) == selected_type]
+    brand_column = next((col for col in df.columns if "brand" in col.lower()), None)
 
-    # ---------------- SEARCH BAR ----------------
-    search_query = st.text_input("🔎 Search Products", placeholder="Example: ipad wifi 256")
+    # ---------- Auto Total Stock ----------
+    def calculate_total_stock(row):
+        total = 0
+        for col in stock_columns:
+            try:
+                total += float(row[col])
+            except:
+                pass
+        return total
 
+    df["Total_Stock_Calc"] = df.apply(calculate_total_stock, axis=1)
+
+    # ---------- Filters ----------
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        search_query = st.text_input("🔎 Search Products", placeholder="Type to search...")
+
+    with col2:
+        if type_column:
+            types = ["All"] + sorted(df[type_column].astype(str).unique())
+            selected_type = st.selectbox("Product Type", types)
+        else:
+            selected_type = "All"
+
+    with col3:
+        sort_option = st.selectbox(
+            "Sort By",
+            ["None", "Brand", "Total Stock", "B2B Price", "Product Type"]
+        )
+
+    # ---------- Apply Type Filter ----------
+    if selected_type != "All" and type_column:
+        df = df[df[type_column].astype(str) == selected_type]
+
+    # ---------- Apply Search (Live) ----------
     if search_query:
         words = search_query.lower().split()
 
@@ -66,64 +99,64 @@ if uploaded_file:
 
         df = df[df.apply(matches, axis=1)]
 
-    st.markdown(f"### {len(df)} Products Found")
+    # ---------- Sorting ----------
+    if sort_option == "Brand" and brand_column:
+        df = df.sort_values(by=brand_column)
+    elif sort_option == "Total Stock":
+        df = df.sort_values(by="Total_Stock_Calc", ascending=False)
+    elif sort_option == "Product Type" and type_column:
+        df = df.sort_values(by=type_column)
+    elif sort_option == "B2B Price":
+        b2b_col = next((col for col in price_columns if "b2b" in col.lower()), None)
+        if b2b_col:
+            df = df.sort_values(by=b2b_col)
 
-    # ---------------- DISPLAY PRODUCTS ----------------
-    unsplash_key = st.secrets.get("UNSPLASH_ACCESS_KEY", "")
+    # ---------- Summary ----------
+    st.markdown(f"**Showing {len(df)} of {total_products} products**")
+    st.markdown("---")
 
-    # Identify Part Number & Description columns
-    part_col = None
-    desc_col = None
-    for col in df.columns:
-        col_lower = col.lower()
-        if "part" in col_lower and "number" in col_lower:
-            part_col = col
-        elif "description" in col_lower:
-            desc_col = col
-
+    # ---------- Display Products ----------
     for _, row in df.iterrows():
 
+        total_stock = row["Total_Stock_Calc"]
+
+        if total_stock == 0:
+            status_icon = "🔴 Out of Stock"
+        elif total_stock <= LOW_STOCK_THRESHOLD:
+            status_icon = "🟠 Low Stock"
+        else:
+            status_icon = "🟢 In Stock"
+
+        brand = row[brand_column] if brand_column else ""
+        product_type = row[type_column] if type_column else ""
+        part_number = next((row[col] for col in df.columns if "part" in col.lower()), "")
+        description = next((row[col] for col in df.columns if "desc" in col.lower()), "")
+
+        st.markdown(f"""
+        **Brand:** {brand}  
+        **Product Type:** {product_type}  
+        **Part Number:** {part_number}  
+        **Description:** {description}  
+
+        📦 **Total Stock:** {int(total_stock)} — {status_icon}
+        """)
+
+        b2b_col = next((col for col in price_columns if "b2b" in col.lower()), None)
+        if b2b_col:
+            st.markdown(f"💰 **B2B Cost Price:** {row[b2b_col]}")
+
+        with st.expander("Expand to show"):
+            st.markdown("📦 **Distributor Stock**")
+            for col in stock_columns:
+                if col != "Total_Stock_Calc":
+                    st.markdown(f"{col}: {row[col]}")
+
+            for col in price_columns:
+                if b2b_col and col == b2b_col:
+                    continue
+                st.markdown(f"💰 {col}: {row[col]}")
+
         st.markdown("---")
-        col1, col2 = st.columns([1, 3])
-
-        # Image
-        with col1:
-            # Combine Part Number & Description for image search
-            part_text = str(row[part_col]) if part_col else ""
-            desc_text = str(row[desc_col]) if desc_col else ""
-            product_name = f"{part_text} {desc_text}".strip()
-
-            if unsplash_key:
-                image_url = get_product_image(product_name, unsplash_key)
-            else:
-                image_url = PLACEHOLDER_IMAGE
-            st.image(image_url, width=120)
-
-        # Details
-        with col2:
-            for column in df.columns:
-                col_lower = column.lower()
-
-                # Price columns
-                if any(keyword in col_lower for keyword in ["price", "b2b", "education"]):
-                    st.markdown(f"💰 **{column}:** {row[column]}")
-
-                # Stock columns
-                elif any(keyword in col_lower for keyword in ["stock", "qty", "quantity"]):
-                    try:
-                        stock_value = float(row[column])
-                        if stock_value <= LOW_STOCK_THRESHOLD:
-                            st.markdown(
-                                f"<span style='color:red; font-weight:bold;'>📦 {column}: {row[column]}</span>",
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.markdown(f"📦 **{column}:** {row[column]}")
-                    except:
-                        st.markdown(f"📦 **{column}:** {row[column]}")
-
-                else:
-                    st.markdown(f"**{column}:** {row[column]}")
 
 else:
     st.info("Upload an Excel file to begin.")
